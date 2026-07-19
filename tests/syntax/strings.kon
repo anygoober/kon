@@ -1,0 +1,6 @@
+fn main() {
+  let name = "Walter "
+  println(name + "White")
+
+  println("\(name) Hartwell White")
+}
