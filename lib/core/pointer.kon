@@ -1,0 +1,10 @@
+pub const null_ptr: *const any = 0;
+pub const null_mut: *mut any   = 0;
+
+fn (*const any).is_null(ptr) -> bool {
+    ptr == null_ptr
+}
+
+fn (*mut any).is_null(ptr) -> bool {
+    ptr == null_mut
+}

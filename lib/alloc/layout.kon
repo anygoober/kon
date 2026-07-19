@@ -1,0 +1,5 @@
+@[data]
+pub struct Layout {
+    pub size: usize,
+    pub align: usize,
+}

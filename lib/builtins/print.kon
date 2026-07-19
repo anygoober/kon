@@ -1,0 +1,9 @@
+#include <stdio.h>
+
+extern "C" {
+    fn printf => c_printf(format: *const char, ...) -> any;
+}
+
+pub fn println(content: string) {
+    c_printf("%s\n", content);
+}
