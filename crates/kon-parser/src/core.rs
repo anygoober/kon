@@ -1,3 +1,5 @@
+use std::panic;
+
 use peg::parser;
 
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -57,6 +59,7 @@ pub enum Stmt {
     Let(String, Expr),
     Expr(Expr),
     Tail(Expr),
+    Return(Option<Expr>),
 }
 
 #[derive(Debug, Clone, uniffi::Record)]
@@ -104,8 +107,11 @@ parser! {
 
         rule __() = quiet!{ [' ' | '\t' | '\n' | '\r']+ }
 
+        rule keyword() -> ()
+            = ("let" / "fn" / "enum" / "struct" / "switch" / "for" / "interface" / "return") ![ 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' ]
+
         rule ident() -> String
-            = quiet!{ s:$(['a'..='z' | 'A'..='Z' | '_'] ['a'..='z' | 'A'..='Z' | '0'..='9' | '_']*) { s.to_string() } }
+            = quiet!{ !keyword() s:$(['a'..='z' | 'A'..='Z' | '_'] ['a'..='z' | 'A'..='Z' | '0'..='9' | '_']*) { s.to_string() } }
             / expected!("identifier")
 
         rule number() -> f64
@@ -173,8 +179,12 @@ parser! {
         rule block_expr() -> Expr
             = switch_expr()
 
+        rule return_stmt() -> Stmt
+            = "return" _ e:expr()? _ ";" { Stmt::Return(e) }
+
         rule stmt() -> Stmt
             = "let" __ name:ident() _ "=" _ e:expr() _ ";" { Stmt::Let(name, e) }
+            / return_stmt()
             / e:block_expr() _ ";"? { Stmt::Expr(e) }
             / e:expr() _ ";" { Stmt::Expr(e) }
 
@@ -304,7 +314,12 @@ parser! {
 
 #[uniffi::export]
 pub fn parse(text: &str) -> Vec<Item> {
-    kon_parser::program(text).unwrap()
+    match kon_parser::program(text) {
+        Ok(t) => t,
+        Err(err) => {
+            panic!("{err}");
+        }
+    }
 }
 
 #[cfg(test)]

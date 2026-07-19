@@ -8,10 +8,13 @@ build-parser:
     cargo run --bin bindgen --features bindgen generate --language python --out-dir out --library target/release/libkon_parser.dylib
 
     # testing
-    python3 test.py || exit 1
+    python3 prepare.py || exit 1
 
     mkdir -p ../../konc/include
     cp -r out/{*.py,*.dylib} ../../konc/include
 
 venv:
     source .venv/bin/activate
+
+konc *ARGS:
+    python3 -m konc {{ ARGS }} || exit 1
