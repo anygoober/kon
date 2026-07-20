@@ -1,0 +1,9 @@
+@[data]
+pub struct Layout {
+    pub size: usize,
+    pub align: usize,
+}
+
+pub fn Layout.new<T>() -> Layout {
+    return Layout { size: @size_of(T), align: @align_of(T) }
+}

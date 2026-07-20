@@ -1,0 +1,45 @@
+from .allocator import Allocator
+
+// https://stackoverflow.com/questions/56619623
+// Why is there no 'aligned_realloc' on most platforms?
+extern "C" {
+    #include <cstdlib>
+
+    fn aligned_alloc => c_aligned_alloc(alignment: usize, size: usize) -> *mut any;
+    fn free => c_free(ptr: *mut any);
+    fn realloc => c_realloc(ptr: *mut any) -> *mut any;
+    fn memcpy => c_memcpy(
+        dest: *mut any,
+        src: *const any,
+        count: usize
+    ) -> *mut any;
+}
+
+pub struct (Allocator) GeneralPurposeAllocator;
+
+pub fn GeneralPurposeAllocator.allocate(
+    self,
+    layout: Layout
+) -> !(*mut u8) {
+    return c_aligned_alloc(layout.align, layout.size);
+}
+
+pub fn GeneralPurposeAllocator.deallocate(self, ptr: *mut u8, _: Layout) {
+    c_free(ptr);
+}
+
+pub fn GeneralPurposeAllocator.grow(
+    self,
+    ptr: *mut u8,
+    old_layout: Layout,
+    new_layout: Layout
+) -> !(*mut u8) {
+    if new_layout.size > old_layout.size {
+        let dest = self.allocate(new_layout);
+        c_memcpy(dest, ptr, old_layout.size);
+        free(ptr);
+        dest
+    } else {
+        ptr
+    }
+}

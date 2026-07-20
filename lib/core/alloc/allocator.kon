@@ -1,0 +1,8 @@
+from .layout import Layout
+
+/// The allocator interface.
+pub interface Allocator {
+    fn allocate(layout: Layout) -> !(*mut u8);
+    fn deallocate(ptr: *mut u8, layout: Layout);
+    fn grow(ptr: *mut u8, old_layout: Layout, new_layout: Layout) -> !(*mut u8);
+}

@@ -1,3 +1,0 @@
-interface Allocator {
-    fn allocate(layout: Layout);
-}

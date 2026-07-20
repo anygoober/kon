@@ -1,0 +1,44 @@
+from core.ptr import null_ptr
+
+/// A dynamically sized array.
+pub struct Vector<T> {
+    capacity: usize;
+    count: usize;
+    items: *mut any;
+}
+
+/// Creates an empty vector without allocating.
+pub fn (Vector<any>).new() -> Vector {
+    return Vector { capacity: 0, count: 0, items: null_ptr };
+}
+
+pub fn [alloc] (Vector<T>).reserve(
+    mut self,
+    expected_capacity: usize
+) {
+    @debug_assert(expected_capacity >= self.capacity);
+
+    let mut new_capacity = self.capacity;
+    if new_capacity == 0 {
+        // initial capacity of 1 for general use cases
+        new_capacity = 1;
+    }
+
+    while expected_capacity > new_capacity {
+        // TODO: add bound checks here
+        //       overflowing would be funny lol
+        new_capacity *= 2;
+    }
+
+    self.items = alloc.grow(
+        self.items,
+        Layout { size: self.capacity * @size_of(T), align: @align_of(T) },
+        Layout { size: new_capacity * @size_of(T),  align: @align_of(T) },
+    );
+}
+
+pub fn [alloc] (Vector<T>).push(mut self, item: T) {
+    self.reserve[alloc](self.count + 1);
+    *(self.items + self.count) = item;
+    self.count += 1;
+}
