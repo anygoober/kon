@@ -5,5 +5,5 @@ pub struct Layout {
 }
 
 pub fn Layout.new<T>() -> Layout {
-    return Layout { size: @size_of(T), align: @align_of(T) }
+    Layout { size: @size_of(T), align: @align_of(T) }
 }

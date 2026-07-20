@@ -20,7 +20,7 @@ pub struct Vector<T> {
 
 /// Creates an empty vector without allocating.
 pub fn (Vector<T>).new() -> Vector<T> {
-    return Vector { capacity: 0, count: 0, items: null_ptr };
+    Vector { capacity: 0, count: 0, items: null_ptr }
 }
 
 pub fn [alloc] (Vector<T>).drop(self) {
