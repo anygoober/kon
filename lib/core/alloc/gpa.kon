@@ -7,7 +7,6 @@ extern "C" {
 
     fn aligned_alloc => c_aligned_alloc(alignment: usize, size: usize) -> *mut any;
     fn free => c_free(ptr: *mut any);
-    fn realloc => c_realloc(ptr: *mut any) -> *mut any;
     fn memcpy => c_memcpy(
         dest: *mut any,
         src: *const any,
@@ -37,7 +36,7 @@ pub fn GeneralPurposeAllocator.grow(
     if new_layout.size > old_layout.size {
         let dest = self.allocate(new_layout);
         c_memcpy(dest, ptr, old_layout.size);
-        free(ptr);
+        c_free(ptr);
         dest
     } else {
         ptr

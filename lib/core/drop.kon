@@ -1,0 +1,5 @@
+pub interface Drop {
+    /// Drops the resource from memory.
+    /// This should usually be a no-op for data.
+    fn [allocator] drop();
+}

@@ -1,15 +1,34 @@
 from core.ptr import null_ptr
 
 /// A dynamically sized array.
+/// You can specify the allocator in functions that require (de/re)allocation.
+///
+/// # Example
+///
+/// ```kon
+/// let mut v: Vector<i32> = Vector.new();
+/// defer v.drop();
+/// v.push(100);
+/// ```
+///
+///
 pub struct Vector<T> {
-    capacity: usize;
-    count: usize;
-    items: *mut any;
+    capacity: usize,
+    count: usize,
+    items: *mut any,
 }
 
 /// Creates an empty vector without allocating.
-pub fn (Vector<any>).new() -> Vector {
+pub fn (Vector<T>).new() -> Vector<T> {
     return Vector { capacity: 0, count: 0, items: null_ptr };
+}
+
+pub fn [alloc] (Vector<T>).drop(self) {
+    alloc.deallocate(self.items, self.layout());
+}
+
+fn (Vector<T>).layout(self) -> Layout {
+    Layout { size: self.capacity * @size_of(T), align: @align_of(T) }
 }
 
 pub fn [alloc] (Vector<T>).reserve(
@@ -32,11 +51,12 @@ pub fn [alloc] (Vector<T>).reserve(
 
     self.items = alloc.grow(
         self.items,
-        Layout { size: self.capacity * @size_of(T), align: @align_of(T) },
+        self.layout(),
         Layout { size: new_capacity * @size_of(T),  align: @align_of(T) },
     );
 }
 
+/// Push an element to the dynamic array.
 pub fn [alloc] (Vector<T>).push(mut self, item: T) {
     self.reserve[alloc](self.count + 1);
     *(self.items + self.count) = item;
