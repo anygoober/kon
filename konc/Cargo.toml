@@ -1,0 +1,8 @@
+[package]
+name = "konc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bumpalo = { version = "3.20.3", features = ["boxed", "collections"] }
+peg = "0.8.6"
