@@ -1,8 +1,11 @@
+from core.cffi import CStr
+
 extern "C" {
     #include <stdio.h>
     fn printf => c_printf(format: *const char, ...) -> any;
 }
 
 pub fn println(content: string) {
-    c_printf("%s\n", content);
+    // TODO: use printf
+    //       for future versions, avoid printf
 }
