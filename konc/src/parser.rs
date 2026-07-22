@@ -225,6 +225,7 @@ pub enum ImportItem<'input> {
     Specific {
         path: Path<'input>,
         idents: Vec<&'input str>,
+        relative: bool,
     },
 }
 
@@ -283,6 +284,7 @@ pub struct InterfaceItem<'bump, 'input> {
 pub struct InterfaceMethod<'input> {
     pub name: &'input str,
     pub params: Vec<Param<'input>>,
+    pub return_type: Option<Type<'input>>,
 }
 
 #[derive(Debug)]
@@ -295,10 +297,19 @@ pub struct ExternItem<'bump, 'input> {
 pub struct Path<'input>(pub Vec<&'input str>);
 
 #[derive(Debug)]
+pub enum TypeModifier<'input> {
+    None,
+    Optional,
+    Undefined,
+    ErrorUnion { error: Option<Path<'input>> },
+}
+
+#[derive(Debug)]
 pub struct Type<'input> {
     pub ident: Path<'input>,
     pub params: Vec<&'input str>,
     pub pointer: Option<PointerKind>,
+    pub modifier: TypeModifier<'input>,
 }
 
 #[derive(Debug)]
@@ -333,15 +344,66 @@ parser! {
             / expected!("identifier")
 
         rule path() -> Path<'input>
-            = parts:(ident() ** (".")) { Path(parts) }
+            = parts:(ident() ++ (".")) { Path(parts) }
 
         rule pointer_kind() -> PointerKind
             = "*" _ "const" __ { PointerKind::Const }
             / "*" _ "mut" __ { PointerKind::Mut }
 
+        rule type_noresult() -> Type<'input>
+            = undefined_type()
+            / optional_type()
+            / pointer:pointer_kind()? p:path() _ params:type_params()? {
+                Type { ident: p, params: params.unwrap_or_default(), pointer, modifier: TypeModifier::None }
+            }
+
         rule typ() -> Type<'input>
+            = type_noresult() / result_type()
+
+        rule rt_typ() -> Type<'input>
+            = type_noresult() / result_type_noerror()
+
+        rule undefined_type() -> Type<'input>
+            = "??" _ u:undefined_type_inner() { u }
+            / "??" _ "(" _ u:undefined_type_inner() _ ")" { u }
+
+        rule undefined_type_inner() -> Type<'input>
+            = p:path() _ params:type_params()? {
+                Type { ident: p, params: params.unwrap_or_default(), pointer: None, modifier: TypeModifier::Undefined }
+            }
+
+        rule optional_type() -> Type<'input>
+            = "?" _ o:optional_type_inner() { o }
+            / "?" _ "(" _ o:optional_type_inner() _ ")" { o }
+
+        rule optional_type_inner() -> Type<'input>
             = pointer:pointer_kind()? p:path() _ params:type_params()? {
-                Type { ident: p, params: params.unwrap_or_default(), pointer }
+                Type { ident: p, params: params.unwrap_or_default(), pointer, modifier: TypeModifier::Optional }
+            }
+
+        rule result_type() -> Type<'input>
+            = error:result_type_err() _ "!" _ ok:result_type_ok() {
+                let (ident, params, pointer) = ok;
+                Type { ident, params, pointer, modifier: TypeModifier::ErrorUnion { error: Some(error) } }
+            }
+
+        rule result_type_noerror() -> Type<'input>
+            = "!" _ ok:result_type_ok() {
+                let (ident, params, pointer) = ok;
+                Type { ident, params, pointer, modifier: TypeModifier::ErrorUnion { error: None } }
+            }
+
+        rule result_type_err() -> Path<'input>
+            = path()
+            / "(" _ err:path() _ ")" { err }
+
+        rule result_type_ok() -> (Path<'input>, Vec<&'input str>, Option<PointerKind>)
+            = o:result_type_ok_inner() { o }
+            / "(" _ o:result_type_ok_inner() _ ")" { o }
+
+        rule result_type_ok_inner() -> (Path<'input>, Vec<&'input str>, Option<PointerKind>)
+            = pointer:pointer_kind()? p:path() _ params:type_params()? {
+                (p, params.unwrap_or_default(), pointer)
             }
 
         rule type_params() -> Vec<&'input str>
@@ -375,8 +437,8 @@ parser! {
         rule import_item() -> Item<'bump, 'input>
             = "import" __ module:path()
               { Item::Import(Box::new_in(ImportItem::Module(module), bump)) }
-            / "from" __ module:path() __ "import" __ idents:import_identifiers()
-              { Item::Import(Box::new_in(ImportItem::Specific { path: module, idents }, bump))  }
+            / "from" __ relative:(".")? module:path() __ "import" __ idents:import_identifiers()
+              { Item::Import(Box::new_in(ImportItem::Specific { path: module, idents, relative: relative.is_some() }, bump))  }
 
         rule import_identifiers() -> Vec<&'input str>
             = "(" _ idents:(ident() ** (_ "," _)) ")" { idents }
@@ -456,7 +518,7 @@ parser! {
               }
 
         rule fn_rt() -> Type<'input>
-            = "->" _ typ:typ() _ { typ }
+            = "->" _ typ:rt_typ() _ { typ }
 
         rule alloc_receiver() -> &'input str
             = "[" _ name:ident() _ "]" _ { name }
@@ -472,8 +534,8 @@ parser! {
 
         rule interface_method() -> InterfaceMethod<'input>
             = "fn" __ name:ident() _
-              "(" _ params:(param() ** (_ "," _)) _ ")" _ ";" {
-                InterfaceMethod { name, params }
+              "(" _ params:(param() ** (_ "," _)) _ ")" _ rt:fn_rt()?  ";" {
+                InterfaceMethod { name, params, return_type: rt }
               }
 
         rule block() -> Vec<Stmt<'bump, 'input>>
