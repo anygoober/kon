@@ -279,15 +279,17 @@ pub enum ExternFnName<'input> {
 #[derive(Debug)]
 pub struct InterfaceItem<'bump, 'input> {
     pub name: &'input str,
-    pub methods: Vec<InterfaceMethod<'bump>>,
+    pub methods: Vec<InterfaceMethod<'bump, 'input>>,
     pub traits: Vec<Type<'input>>,
 }
 
 #[derive(Debug)]
-pub struct InterfaceMethod<'input> {
+pub struct InterfaceMethod<'bump, 'input> {
     pub name: &'input str,
+    pub allocator_receiver: Option<&'input str>,
     pub params: Vec<Param<'input>>,
     pub return_type: Option<Type<'input>>,
+    pub body: Vec<Stmt<'bump, 'input>>,
 }
 
 #[derive(Debug)]
@@ -544,10 +546,11 @@ parser! {
               methods:(interface_method() ** _) _
               "}" { Item::Interface(Box::new_in(InterfaceItem { name, methods, traits: traits.unwrap_or_default() }, bump)) }
 
-        rule interface_method() -> InterfaceMethod<'input>
-            = "fn" __ name:ident() _
-              "(" _ params:(param() ** (_ "," _)) _ ")" _ rt:fn_rt()?  ";" {
-                InterfaceMethod { name, params, return_type: rt }
+        rule interface_method() -> InterfaceMethod<'bump, 'input>
+            = "fn" __ alloc_recv:alloc_receiver()? name:ident() _
+              "(" _ params:(param() ** (_ "," _)) _ ")" _ rt:fn_rt()?
+              body:(";" { vec![] } / b:block() { b }) {
+                InterfaceMethod { name, params, return_type: rt, allocator_receiver: alloc_recv, body }
               }
 
         rule block() -> Vec<Stmt<'bump, 'input>>
