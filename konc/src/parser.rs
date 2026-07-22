@@ -18,7 +18,7 @@ impl<'bump, 'input> StringPart<'bump, 'input> {
             Self::Literal(lit) => Self::Literal(lit),
             Self::Interp { expr, format } => Self::Interp {
                 expr: Box::new_in(expr.clone_in(bump), bump),
-                format: format.clone(),
+                format: *format,
             },
         }
     }
