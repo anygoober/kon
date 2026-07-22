@@ -188,7 +188,7 @@ impl<'bump, 'input> Stmt<'bump, 'input> {
 #[derive(Debug)]
 pub struct Param<'input> {
     pub name: &'input str,
-    pub ty: Type<'input>,
+    pub ty: Option<Type<'input>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -239,12 +239,14 @@ pub struct LetItem<'bump, 'input> {
 pub struct EnumItem<'input> {
     pub name: &'input str,
     pub variants: Vec<&'input str>,
+    pub traits: Vec<Type<'input>>,
 }
 
 #[derive(Debug)]
 pub struct StructItem<'input> {
     pub name: &'input str,
     pub fields: Vec<Param<'input>>,
+    pub traits: Vec<Type<'input>>,
 }
 
 #[derive(Debug)]
@@ -278,6 +280,7 @@ pub enum ExternFnName<'input> {
 pub struct InterfaceItem<'bump, 'input> {
     pub name: &'input str,
     pub methods: Vec<InterfaceMethod<'bump>>,
+    pub traits: Vec<Type<'input>>,
 }
 
 #[derive(Debug)]
@@ -487,20 +490,29 @@ parser! {
             = "=>" _ name:ident() _ { name }
 
         rule enum_item() -> Item<'bump, 'input>
-            = "enum" __ name:ident() _ "{" _
+            = "enum" __ traits:satisfies_traits()? name:ident() _ "{" _
               variants:(enum_variant() ** (_ "," _)) _ ","? _
-              "}" { Item::Enum(Box::new_in(EnumItem { name, variants }, bump)) }
+              "}" { Item::Enum(Box::new_in(EnumItem { name, variants, traits: traits.unwrap_or_default() }, bump)) }
 
         rule enum_variant() -> &'input str
             = "." v:ident() { v }
 
         rule struct_item() -> Item<'bump, 'input>
-            = "struct" __ name:ident() _ "{" _
+            = struct_item_with_fields()
+            / "struct" __ traits:satisfies_traits()? name:ident() _ ";" {
+                Item::Struct(Box::new_in(StructItem { name, fields: vec![], traits: traits.unwrap_or_default() }, bump))
+            }
+
+        rule struct_item_with_fields() -> Item<'bump, 'input>
+            = "struct" __ traits:satisfies_traits()? name:ident() _ "{" _
               fields:(param() ** (_ "," _)) _ ","? _
-              "}" { Item::Struct(Box::new_in(StructItem { name, fields }, bump)) }
+              "}" { Item::Struct(Box::new_in(StructItem { name, fields, traits: traits.unwrap_or_default() }, bump)) }
+
+        rule satisfies_traits() -> Vec<Type<'input>>
+            = "(" _ traits:(typ() ** (_ "," _)) _ ")" _ { traits }
 
         rule param() -> Param<'input>
-            = name:ident() _ ":" _ ty:typ() { Param { name, ty } }
+            = name:ident() ty:(_ ":" _ ty:typ() { ty })? { Param { name, ty } }
 
         rule fn_item() -> Item<'bump, 'input>
             = "fn" __ alloc_recv:alloc_receiver()? recv:receiver()? name:ident() _
@@ -528,9 +540,9 @@ parser! {
             / _ p:ident() "." { p }
 
         rule interface_item() -> Item<'bump, 'input>
-            = "interface" __ name:ident() _ "{" _
+            = "interface" __ traits:satisfies_traits()? name:ident() _ "{" _
               methods:(interface_method() ** _) _
-              "}" { Item::Interface(Box::new_in(InterfaceItem { name, methods }, bump)) }
+              "}" { Item::Interface(Box::new_in(InterfaceItem { name, methods, traits: traits.unwrap_or_default() }, bump)) }
 
         rule interface_method() -> InterfaceMethod<'input>
             = "fn" __ name:ident() _
