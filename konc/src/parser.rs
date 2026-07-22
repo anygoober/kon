@@ -251,7 +251,7 @@ pub struct StructItem<'input> {
 
 #[derive(Debug)]
 pub struct FnItem<'bump, 'input> {
-    pub receiver: Option<&'input str>,
+    pub receiver: Option<Type<'input>>,
     pub allocator_receiver: Option<&'input str>,
     pub name: &'input str,
     pub params: Vec<Param<'input>>,
@@ -537,9 +537,9 @@ parser! {
         rule alloc_receiver() -> &'input str
             = "[" _ name:ident() _ "]" _ { name }
 
-        rule receiver() -> &'input str
-            = "(" _ p:ident() _ ")" "." { p }
-            / _ p:ident() "." { p }
+        rule receiver() -> Type<'input>
+            = "(" _ p:typ() _ ")" "." { p }
+            / _ p:typ() "." { p }
 
         rule interface_item() -> Item<'bump, 'input>
             = "interface" __ traits:satisfies_traits()? name:ident() _ "{" _
