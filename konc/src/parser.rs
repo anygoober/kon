@@ -331,9 +331,9 @@ parser! {
             { Item::Extern(Box::new_in(ExternItem { lang, items: vec![] }, bump)) }
 
         rule extern_body() -> Vec<Item<'bump, 'input>>
-            = _ items:(extern_body_item() ** _) _ { items }
+            = _ items:(extern_item_body() ** _) _ { items }
 
-        rule extern_body_item() -> Item<'bump, 'input>
+        rule extern_item_body() -> Item<'bump, 'input>
             = struct_item()
             / enum_item()
             / extern_fn_item()
@@ -643,7 +643,8 @@ mod tests {
     fn test_extern() {
         let src = r#"
         extern "C" {
-            fn "susbaka" => suka();
+            #include <stdio.h>
+            fn suka();
         }"#;
 
         parse(src);
