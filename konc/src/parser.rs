@@ -214,6 +214,10 @@ pub enum Item<'bump, 'input> {
         name: &'input str,
         methods: Vec<InterfaceMethod<'bump>>,
     },
+    Extern {
+        lang: &'input str,
+        items: Vec<Stmt<'bump, 'input>>,
+    },
 }
 
 #[derive(Debug)]
@@ -249,7 +253,8 @@ parser! {
         rule __() = quiet!{ [' ' | '\t' | '\n' | '\r']+ }
 
         rule keyword() -> ()
-            = ("let" / "fn" / "enum" / "struct" / "switch" / "for" / "interface" / "return") ![ 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' ]
+            = ("let" / "fn" / "enum" / "struct" / "switch" / "for" / "interface" / "return" / "extern")
+                ![ 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' ]
 
         rule ident() -> &'input str
             = quiet!{ !keyword() s:$(['a'..='z' | 'A'..='Z' | '_'] ['a'..='z' | 'A'..='Z' | '0'..='9' | '_']*) { s } }
@@ -274,6 +279,7 @@ parser! {
 
         rule item() -> Item<'bump, 'input>
             = let_item()
+            / extern_item()
             / enum_item()
             / struct_item()
             / fn_item()
@@ -281,6 +287,11 @@ parser! {
 
         rule let_item() -> Item<'bump, 'input>
             = "let" __ name:ident() _ "=" _ e:expr() _ ";" { Item::Let(name, e) }
+
+        rule extern_item() -> Item<'bump, 'input>
+            = "extern" __ lang:string_lit() _ "{" _ "}" { Item::Extern { lang, items: vec![] } }
+
+        // rule extern_body()
 
         rule enum_item() -> Item<'bump, 'input>
             = "enum" __ name:ident() _ "{" _
@@ -335,7 +346,7 @@ parser! {
               }
 
         rule block() -> Vec<Stmt<'bump, 'input>>
-            = "{" _ stmts:(stmt() ** _) _ tail:expr()? _ "}" {
+            = "{" _ stmts:(stmt()*) _ tail:expr()? _ "}" {
                 let mut stmts = stmts;
                 if let Some(e) = tail {
                     stmts.push(Stmt::Tail(e));
@@ -421,7 +432,7 @@ parser! {
             / struct_lit()
             / type_variant()
             / dot_variant()
-            / string_lit()
+            / string_expr()
             / n:number() { Expr::Number(n) }
             / "(" _ e:expr() _ ")" { e }
             / name:ident() { Expr::Ident(name) }
@@ -468,12 +479,15 @@ parser! {
                 Expr::For { binders, iter: Box::new_in(iter, bump), body }
             }
 
-        rule string_lit() -> Expr<'bump, 'input>
+        rule string_expr() -> Expr<'bump, 'input>
             = multiline_string()
             / quoted_string()
 
         rule quoted_string() -> Expr<'bump, 'input>
             = "\"" parts:string_part()* "\"" { Expr::Str(parts) }
+
+        rule string_lit() -> &'input str
+            = "\"" lit:$((!("\"" / "\\(") [_])+) "\"" { lit }
 
         rule string_part() -> StringPart<'bump, 'input>
             = "\\(" _ e:expr() fmt:(":" f:$([^ ')']+) { f })? _ ")" {
@@ -519,13 +533,21 @@ pub fn parse<'bump, 'input>(text: &'input str, bump: &'bump Bump) -> Vec<Item<'b
 
 #[cfg(test)]
 mod tests {
-    use Bump;
-
     use super::*;
+
+    fn parse(src: &str) {
+        let bump = Bump::new();
+        match kon_parser::program(src, &bump) {
+            Ok(_) => (),
+            Err(e) => {
+                panic!("parse error: {}", e);
+            }
+        }
+    }
 
     #[test]
     fn test_simple() {
-        let source = r#"
+        let src = r#"
     let prefix = "Hello, ";
     let name = "World and " * 2;
     let name2 = "World";
@@ -551,12 +573,15 @@ mod tests {
     }
     "#;
 
-        let bump = Bump::new();
-        match kon_parser::program(source, &bump) {
-            Ok(_) => (),
-            Err(e) => {
-                panic!("parse error: {}", e);
-            }
-        }
+        parse(src);
+    }
+
+    #[test]
+    fn test_extern() {
+        let src = r#"
+        extern "C" {
+        }"#;
+
+        parse(src);
     }
 }
