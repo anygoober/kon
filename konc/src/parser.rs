@@ -200,6 +200,9 @@ pub enum Item<'bump, 'input> {
     Interface(Box<'bump, InterfaceItem<'bump, 'input>>),
     Extern(Box<'bump, ExternItem<'bump, 'input>>),
     ExternFnItem(Box<'bump, ExternFnItem<'input>>),
+
+    // c macros support
+    CMacroInclude(&'input str),
 }
 
 #[derive(Debug)]
@@ -337,6 +340,14 @@ parser! {
             = struct_item()
             / enum_item()
             / extern_fn_item()
+            / extern_include_item()
+
+        rule extern_include_item() -> Item<'bump, 'input>
+            = "#include" __ name:extern_include_name() { Item::CMacroInclude(name) }
+
+        rule extern_include_name() -> &'input str
+            = string_lit()
+            / "<" _ name:$((!['>'] [_])+) _ ">" { name }
 
         rule extern_fn_item() -> Item<'bump, 'input>
             = "fn" __ name:(extern_fn_name()) _
