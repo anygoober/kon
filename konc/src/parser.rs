@@ -70,6 +70,10 @@ pub enum Expr<'bump, 'input> {
         body: Vec<Stmt<'bump, 'input>>,
     },
     Block(Vec<Stmt<'bump, 'input>>),
+    CompilerIntrinsic {
+        name: &'input str,
+        params: Vec<Expr<'bump, 'input>>,
+    },
 }
 
 impl<'bump, 'input> Expr<'bump, 'input> {
@@ -149,6 +153,11 @@ impl<'bump, 'input> Expr<'bump, 'input> {
             },
 
             Self::Block(stmts) => Self::Block(stmts.iter().map(|s| s.clone_in(bump)).collect()),
+
+            Self::CompilerIntrinsic { name, params } => Self::CompilerIntrinsic {
+                name,
+                params: params.iter().map(|s| s.clone_in(bump)).collect(),
+            },
         }
     }
 }
@@ -290,6 +299,7 @@ pub struct EnumItem<'input> {
     pub name: &'input str,
     pub variants: Vec<&'input str>,
     pub traits: Vec<Type<'input>>,
+    pub ty_params: Vec<&'input str>,
 }
 
 #[derive(Debug)]
@@ -297,6 +307,7 @@ pub struct StructItem<'input> {
     pub name: &'input str,
     pub fields: Vec<Param<'input>>,
     pub traits: Vec<Type<'input>>,
+    pub ty_params: Vec<&'input str>,
 }
 
 #[derive(Debug)]
@@ -331,6 +342,7 @@ pub struct InterfaceItem<'bump, 'input> {
     pub name: &'input str,
     pub methods: Vec<InterfaceMethod<'bump, 'input>>,
     pub traits: Vec<Type<'input>>,
+    pub ty_params: Vec<&'input str>,
 }
 
 #[derive(Debug)]
@@ -469,7 +481,8 @@ parser! {
             = "<" _ params:(ident() ** (_ "," _))  _ ">" { params }
 
         rule number() -> f64
-            = n:$(['0'..='9']+ ("." ['0'..='9']+)?) { n.parse().unwrap() }
+            = quiet! { n:$(['0'..='9']+ ("." ['0'..='9']+)?) { n.parse().unwrap() } }
+            / expected!("number")
 
         rule bool_lit() -> Expr<'bump, 'input>
             = "true" ![ 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' ] { Expr::Bool(true) }
@@ -562,23 +575,56 @@ parser! {
             = "=>" _ name:ident() _ { name }
 
         rule enum_item() -> Item<'bump, 'input>
-            = "enum" __ traits:satisfies_traits()? name:ident() _ "{" _
+            = "enum" __ traits:satisfies_traits()? name:ident() _ ty_params:type_params()? _ "{" _
               variants:(enum_variant() ** (_ "," _)) _ ","? _
-              "}" { Item::Enum(Box::new_in(EnumItem { name, variants, traits: traits.unwrap_or_default() }, bump)) }
+              "}" {
+                  Item::Enum(
+                      Box::new_in(
+                          EnumItem {
+                              name,
+                              variants,
+                              traits: traits.unwrap_or_default(),
+                              ty_params: ty_params.unwrap_or_default()
+                          },
+                          bump
+                      )
+                  )
+              }
 
         rule enum_variant() -> &'input str
             = "." v:ident() { v }
 
         rule struct_item() -> Item<'bump, 'input>
             = struct_item_with_fields()
-            / "struct" __ traits:satisfies_traits()? name:ident() _ ";" {
-                Item::Struct(Box::new_in(StructItem { name, fields: vec![], traits: traits.unwrap_or_default() }, bump))
+            / "struct" __ traits:satisfies_traits()? name:ident() _ ty_params:type_params()? _ ";" {
+                Item::Struct(
+                    Box::new_in(
+                        StructItem {
+                            name,
+                            fields: vec![],
+                            traits: traits.unwrap_or_default(),
+                            ty_params: ty_params.unwrap_or_default()
+                        },
+                        bump
+                    )
+                )
             }
 
         rule struct_item_with_fields() -> Item<'bump, 'input>
-            = "struct" __ traits:satisfies_traits()? name:ident() _ "{" _
-              fields:(param() ** (_ "," _)) _ ","? _
-              "}" { Item::Struct(Box::new_in(StructItem { name, fields, traits: traits.unwrap_or_default() }, bump)) }
+            = "struct" __ traits:satisfies_traits()? name:ident()
+              _ ty_params:type_params()?
+              _ "{" _ fields:(param() ** (_ "," _)) _ ","? _
+              "}" {
+                  Item::Struct(Box::new_in(
+                      StructItem {
+                          name,
+                          fields,
+                          traits: traits.unwrap_or_default(),
+                          ty_params: ty_params.unwrap_or_default()
+                      },
+                      bump
+                  ))
+              }
 
         rule satisfies_traits() -> Vec<Type<'input>>
             = "(" _ traits:(typ() ** (_ "," _)) _ ")" _ { traits }
@@ -617,9 +663,21 @@ parser! {
             }
 
         rule interface_item() -> Item<'bump, 'input>
-            = "interface" __ traits:satisfies_traits()? name:ident() _ "{" _
+            = "interface" __ traits:satisfies_traits()? name:ident() _ ty_params:type_params()? _ "{" _
               methods:(interface_method() ** _) _
-              "}" { Item::Interface(Box::new_in(InterfaceItem { name, methods, traits: traits.unwrap_or_default() }, bump)) }
+              "}" {
+                  Item::Interface(
+                      Box::new_in(
+                          InterfaceItem {
+                              name,
+                              methods,
+                              traits: traits.unwrap_or_default(),
+                              ty_params: ty_params.unwrap_or_default()
+                          },
+                          bump
+                      )
+                  )
+              }
 
         rule interface_method() -> InterfaceMethod<'bump, 'input>
             = "fn" __ alloc_recv:alloc_receiver()? name:ident() _
@@ -641,19 +699,25 @@ parser! {
             = switch_expr() / if_expr() / while_expr()
 
         rule if_expr() -> Expr<'bump, 'input>
-            = "if" _ cond:expr() _ then_branch:block()
-            else_branch:(_ "else" _ e:else_tail() { e })? {
-                Expr::If { cond: Box::new_in(cond, bump), then_branch, else_branch }
+            = quiet! {
+                "if" _ cond:expr() _ then_branch:block()
+                  else_branch:(_ "else" _ e:else_tail() { e })? {
+                      Expr::If { cond: Box::new_in(cond, bump), then_branch, else_branch }
+                  }
             }
+            / expected!("if-else")
 
         rule else_tail() -> Vec<Stmt<'bump, 'input>>
             = b:block() { b }
             / e:if_expr() { vec![Stmt::Tail(e)] }
 
         rule while_expr() -> Expr<'bump, 'input>
-            = "while" _ cond:expr() _ body:block() {
-                Expr::While { cond: Box::new_in(cond, bump), body }
+            = quiet! {
+                "while" _ cond:expr() _ body:block() {
+                    Expr::While { cond: Box::new_in(cond, bump), body }
+                }
             }
+            / expected!("while loop")
 
         rule return_stmt() -> Stmt<'bump, 'input>
             = "return" _ e:expr()? _ ";" { Stmt::Return(e) }
@@ -684,8 +748,8 @@ parser! {
             x:(@) _ "*" _ y:@ { Expr::Binary(Box::new_in(x, bump), BinOp::Mul, Box::new_in(y, bump)) }
             x:(@) _ "/" _ y:@ { Expr::Binary(Box::new_in(x, bump), BinOp::Div, Box::new_in(y, bump)) }
                 --
-            "-" e:@ { Expr::Neg(Box::new_in(e, bump)) }
-            "!" e:@ { Expr::Not(Box::new_in(e, bump)) }
+            quiet! { "-" } e:@ { Expr::Neg(Box::new_in(e, bump)) }
+            quiet! { "!" } e:@ { Expr::Not(Box::new_in(e, bump)) }
                 --
             e:postfix() { e }
         }
@@ -750,7 +814,7 @@ parser! {
             / dot_variant()
             / string_expr()
             / n:number() { Expr::Number(n) }
-            / "(" _ e:expr() _ ")" { e }
+            / quiet! { "(" _ e:expr() _ ")" { e } }
             / name:ident() { Expr::Ident(name) }
 
         rule type_variant() -> Expr<'bump, 'input>
@@ -791,16 +855,20 @@ parser! {
             = dot_variant() / expr()
 
         rule for_expr() -> Expr<'bump, 'input>
-            = "for" __ binders:(ident() ** (_ "," _)) __ "in" __ iter:expr() _ body:block() {
-                Expr::For { binders, iter: Box::new_in(iter, bump), body }
+            = quiet! {
+                "for" __ binders:(ident() ** (_ "," _)) __ "in" __ iter:expr() _ body:block() {
+                    Expr::For { binders, iter: Box::new_in(iter, bump), body }
+                }
             }
+            / expected!("for loop")
 
         rule string_expr() -> Expr<'bump, 'input>
             = multiline_string()
             / quoted_string()
 
         rule quoted_string() -> Expr<'bump, 'input>
-            = "\"" parts:string_part()* "\"" { Expr::Str(parts) }
+            = quiet! { "\"" parts:string_part()* "\"" { Expr::Str(parts) } }
+            / expected!("string")
 
         rule string_lit() -> &'input str
             = "\"" lit:$((!("\"" / "\\(") [_])+) "\"" { lit }
@@ -826,7 +894,7 @@ parser! {
             }
 
         rule multiline_line() -> Vec<StringPart<'bump, 'input>>
-            = "\\\\" parts:multiline_part()* "\n"? { parts }
+            = quiet! { "\\\\" parts:multiline_part()* "\n"? { parts } }
 
         rule multiline_part() -> StringPart<'bump, 'input>
             = "\\(" _ e:expr() fmt:(":" f:$([^ ')']+) { f })? _ ")" {
@@ -835,6 +903,9 @@ parser! {
             / lit:$((!("\n" / "\\(") [_])+) {
                 StringPart::Literal(lit)
             }
+
+        rule compiler_intrinsic()
+            =
     }
 }
 
