@@ -188,7 +188,19 @@ impl<'bump, 'input> Stmt<'bump, 'input> {
 #[derive(Debug)]
 pub struct Param<'input> {
     pub name: &'input str,
-    pub ty: &'input str,
+    pub ty: Type<'input>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Visibility {
+    Public,
+    Unspecified,
+}
+
+#[derive(Debug)]
+pub struct TopLevelItem<'bump, 'input> {
+    pub visibility: Visibility,
+    pub item: Item<'bump, 'input>,
 }
 
 #[derive(Debug)]
@@ -198,11 +210,22 @@ pub enum Item<'bump, 'input> {
     Struct(Box<'bump, StructItem<'input>>),
     Fn(Box<'bump, FnItem<'bump, 'input>>),
     Interface(Box<'bump, InterfaceItem<'bump, 'input>>),
+    Import(Box<'bump, ImportItem<'input>>),
+
     Extern(Box<'bump, ExternItem<'bump, 'input>>),
     ExternFnItem(Box<'bump, ExternFnItem<'input>>),
 
     // c macros support
     CMacroInclude(&'input str),
+}
+
+#[derive(Debug)]
+pub enum ImportItem<'input> {
+    Module(Path<'input>),
+    Specific {
+        path: Path<'input>,
+        idents: Vec<&'input str>,
+    },
 }
 
 #[derive(Debug)]
@@ -238,6 +261,7 @@ pub struct ExternFnItem<'input> {
     pub name: ExternFnName<'input>,
     pub params: Vec<Param<'input>>,
     pub return_type: Option<Type<'input>>,
+    pub variadic_args: bool, // the '...' va_arg-ish c code
 }
 
 #[derive(Debug)]
@@ -274,6 +298,13 @@ pub struct Path<'input>(pub Vec<&'input str>);
 pub struct Type<'input> {
     pub ident: Path<'input>,
     pub params: Vec<&'input str>,
+    pub pointer: Option<PointerKind>,
+}
+
+#[derive(Debug)]
+pub enum PointerKind {
+    Const,
+    Mut,
 }
 
 enum LaterPostfixOp<'bump, 'input> {
@@ -294,7 +325,7 @@ parser! {
         rule __() = quiet!{ [' ' | '\t' | '\n' | '\r']+ }
 
         rule keyword() -> ()
-            = ("let" / "fn" / "enum" / "struct" / "switch" / "for" / "interface" / "return" / "extern")
+            = ("let" / "fn" / "enum" / "struct" / "switch" / "for" / "interface" / "return" / "extern" / "pub")
                 ![ 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' ]
 
         rule ident() -> &'input str
@@ -304,9 +335,13 @@ parser! {
         rule path() -> Path<'input>
             = parts:(ident() ** (".")) { Path(parts) }
 
+        rule pointer_kind() -> PointerKind
+            = "*" _ "const" __ { PointerKind::Const }
+            / "*" _ "mut" __ { PointerKind::Mut }
+
         rule typ() -> Type<'input>
-            = p:path() _ params:type_params()? {
-                Type { ident: p, params: params.unwrap_or_default() }
+            = pointer:pointer_kind()? p:path() _ params:type_params()? {
+                Type { ident: p, params: params.unwrap_or_default(), pointer }
             }
 
         rule type_params() -> Vec<&'input str>
@@ -315,10 +350,10 @@ parser! {
         rule number() -> f64
             = n:$(['0'..='9']+ ("." ['0'..='9']+)?) { n.parse().unwrap() }
 
-        pub rule program() -> Vec<Item<'bump, 'input>>
-            = _ items:(item() ** _) _ { items }
+        pub rule program() -> Vec<TopLevelItem<'bump, 'input>>
+            = _ items:(toplevel_item() ** _) _ { items }
 
-        rule item() -> Item<'bump, 'input>
+        rule nonimport_item() -> Item<'bump, 'input>
             = let_item()
             / extern_item()
             / enum_item()
@@ -326,11 +361,32 @@ parser! {
             / fn_item()
             / interface_item()
 
+        rule visibility() -> Visibility
+            = "pub" __ { Visibility::Public }
+            / _ { Visibility::Unspecified }
+
+        rule item() -> Item<'bump, 'input>
+            = nonimport_item() / import_item()
+
+        rule toplevel_item() -> TopLevelItem<'bump, 'input>
+            = vis:visibility() itm:nonimport_item() { TopLevelItem { visibility: vis, item: itm } }
+            / import:import_item() { TopLevelItem { visibility: Visibility::Unspecified, item: import } }
+
+        rule import_item() -> Item<'bump, 'input>
+            = "import" __ module:path()
+              { Item::Import(Box::new_in(ImportItem::Module(module), bump)) }
+            / "from" __ module:path() __ "import" __ idents:import_identifiers()
+              { Item::Import(Box::new_in(ImportItem::Specific { path: module, idents }, bump))  }
+
+        rule import_identifiers() -> Vec<&'input str>
+            = "(" _ idents:(ident() ** (_ "," _)) ")" { idents }
+            / name:ident() { vec![name] }
+
         rule let_item() -> Item<'bump, 'input>
             = "let" __ name:ident() _ "=" _ e:expr() _ ";" { Item::Let(Box::new_in(LetItem { ident: name, expr: e }, bump)) }
 
         rule extern_item() -> Item<'bump, 'input>
-            = "extern" __ lang:string_lit() _ "{" _ extern_body() _ "}"
+            = "extern" __ lang:string_lit() _ "{" extern_body() "}"
             { Item::Extern(Box::new_in(ExternItem { lang, items: vec![] }, bump)) }
 
         rule extern_body() -> Vec<Item<'bump, 'input>>
@@ -351,18 +407,19 @@ parser! {
 
         rule extern_fn_item() -> Item<'bump, 'input>
             = "fn" __ name:(extern_fn_name()) _
-              "(" _ params:(param() ** (_ "," _)) _ ")" _
+                "(" _ params:(param() ** (_ "," _)) _ variadic:("," _ "...")? _ ")" _
               rt:fn_rt()? ";" {
                 Item::ExternFnItem(Box::new_in(ExternFnItem {
                     name,
                     params,
-                    return_type: rt
+                    return_type: rt,
+                    variadic_args: variadic.is_some()
                 }, bump))
               }
 
         rule extern_fn_name() -> ExternFnName<'input>
-            = name:ident() { ExternFnName::Name(name) }
-            / external:string_lit() _ rename:extern_fn_rename() { ExternFnName::Rename { external, rename } }
+            = external:(string_lit() / ident()) _ rename:extern_fn_rename() { ExternFnName::Rename { external, rename } }
+            / name:ident() { ExternFnName::Name(name) }
 
         rule extern_fn_rename() -> &'input str
             = "=>" _ name:ident() _ { name }
@@ -381,7 +438,7 @@ parser! {
               "}" { Item::Struct(Box::new_in(StructItem { name, fields }, bump)) }
 
         rule param() -> Param<'input>
-            = name:ident() _ ":" _ ty:ident() { Param { name, ty } }
+            = name:ident() _ ":" _ ty:typ() { Param { name, ty } }
 
         rule fn_item() -> Item<'bump, 'input>
             = "fn" __ alloc_recv:alloc_receiver()? recv:receiver()? name:ident() _
@@ -596,7 +653,10 @@ parser! {
     }
 }
 
-pub fn parse<'bump, 'input>(text: &'input str, bump: &'bump Bump) -> Vec<Item<'bump, 'input>> {
+pub fn parse<'bump, 'input>(
+    text: &'input str,
+    bump: &'bump Bump,
+) -> Vec<TopLevelItem<'bump, 'input>> {
     match kon_parser::program(text, bump) {
         Ok(t) => t,
         Err(err) => {
@@ -643,7 +703,7 @@ mod tests {
     }
 
     interface ToString {
-      fn to_string(name: string);
+      fn to_string(name: *const string.string);
     }
     "#;
 
@@ -655,7 +715,8 @@ mod tests {
         let src = r#"
         extern "C" {
             #include <stdio.h>
-            fn suka();
+            fn blyatt => suka();
+            fn "blyatt" => suka();
         }"#;
 
         parse(src);
