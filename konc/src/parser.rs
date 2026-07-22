@@ -199,6 +199,7 @@ pub enum Item<'bump, 'input> {
     Fn(Box<'bump, FnItem<'bump, 'input>>),
     Interface(Box<'bump, InterfaceItem<'bump, 'input>>),
     Extern(Box<'bump, ExternItem<'bump, 'input>>),
+    ExternFnItem(Box<'bump, ExternFnItem<'input>>),
 }
 
 #[derive(Debug)]
@@ -226,7 +227,23 @@ pub struct FnItem<'bump, 'input> {
     pub name: &'input str,
     pub params: Vec<Param<'input>>,
     pub body: Vec<Stmt<'bump, 'input>>,
-    pub return_type: Type<'input>,
+    pub return_type: Option<Type<'input>>,
+}
+
+#[derive(Debug)]
+pub struct ExternFnItem<'input> {
+    pub name: ExternFnName<'input>,
+    pub params: Vec<Param<'input>>,
+    pub return_type: Option<Type<'input>>,
+}
+
+#[derive(Debug)]
+pub enum ExternFnName<'input> {
+    Name(&'input str),
+    Rename {
+        external: &'input str,
+        rename: &'input str,
+    },
 }
 
 #[derive(Debug)]
@@ -310,9 +327,34 @@ parser! {
             = "let" __ name:ident() _ "=" _ e:expr() _ ";" { Item::Let(Box::new_in(LetItem { ident: name, expr: e }, bump)) }
 
         rule extern_item() -> Item<'bump, 'input>
-            = "extern" __ lang:string_lit() _ "{" _ "}" { Item::Extern(Box::new_in(ExternItem { lang, items: vec![] }, bump)) }
+            = "extern" __ lang:string_lit() _ "{" _ extern_body() _ "}"
+            { Item::Extern(Box::new_in(ExternItem { lang, items: vec![] }, bump)) }
 
-        // rule extern_body()
+        rule extern_body() -> Vec<Item<'bump, 'input>>
+            = _ items:(extern_body_item() ** _) _ { items }
+
+        rule extern_body_item() -> Item<'bump, 'input>
+            = struct_item()
+            / enum_item()
+            / extern_fn_item()
+
+        rule extern_fn_item() -> Item<'bump, 'input>
+            = "fn" __ name:(extern_fn_name()) _
+              "(" _ params:(param() ** (_ "," _)) _ ")" _
+              rt:fn_rt()? ";" {
+                Item::ExternFnItem(Box::new_in(ExternFnItem {
+                    name,
+                    params,
+                    return_type: rt
+                }, bump))
+              }
+
+        rule extern_fn_name() -> ExternFnName<'input>
+            = name:ident() { ExternFnName::Name(name) }
+            / external:string_lit() _ rename:extern_fn_rename() { ExternFnName::Rename { external, rename } }
+
+        rule extern_fn_rename() -> &'input str
+            = "=>" _ name:ident() _ { name }
 
         rule enum_item() -> Item<'bump, 'input>
             = "enum" __ name:ident() _ "{" _
@@ -333,7 +375,7 @@ parser! {
         rule fn_item() -> Item<'bump, 'input>
             = "fn" __ alloc_recv:alloc_receiver()? recv:receiver()? name:ident() _
               "(" _ params:(param() ** (_ "," _)) _ ")" _
-              rt:fn_rt()
+              rt:fn_rt()?
               body:block() {
                 Item::Fn(Box::new_in(FnItem {
                     receiver: recv,
@@ -601,6 +643,7 @@ mod tests {
     fn test_extern() {
         let src = r#"
         extern "C" {
+            fn "susbaka" => suka();
         }"#;
 
         parse(src);
