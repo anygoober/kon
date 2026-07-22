@@ -1,8 +1,10 @@
 use std::{error::Error, fs, path::PathBuf, process::exit};
 
+use ariadne::{Label, Report, ReportKind, Source};
 use bumpalo::Bump;
-use konc::parser as konc_parser;
 use pico_args::Arguments;
+
+use konc::parser as konc_parser;
 
 #[cfg(false)]
 fn create_module() {
@@ -44,13 +46,37 @@ fn main() -> Result<(), Box<dyn Error>> {
         exit(0);
     }
 
-    let file: PathBuf = args.free_from_str()?;
-    let content = fs::read_to_string(file)?;
+    let source_path: PathBuf = args.free_from_str()?;
+    let source_path_str = source_path.to_str().unwrap_or("<input>");
+
+    let source = fs::read_to_string(&source_path)?;
 
     let bump = Bump::new();
-    let ast = konc_parser::parse(&content, &bump);
+    let result = konc_parser::parse(&source, &bump);
 
-    println!("{ast:#?}");
+    match result {
+        Ok(t) => println!("{t:#?}"),
+        Err(err) => {
+            Report::build(
+                ReportKind::Error,
+                (
+                    source_path_str,
+                    err.location.offset..(err.location.offset + 1),
+                ),
+            )
+            .with_code("syntax0")
+            .with_message("Syntax error")
+            .with_label(
+                Label::new((
+                    source_path_str,
+                    err.location.offset..(err.location.offset + 1),
+                ))
+                .with_message(err.to_string()),
+            )
+            .finish()
+            .print((source_path_str, Source::from(&source)))?;
+        }
+    }
 
     Ok(())
 }

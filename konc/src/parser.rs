@@ -1,7 +1,7 @@
 use std::panic;
 
 use bumpalo::{Bump, boxed::Box};
-use peg::parser;
+use peg::{error::ParseError, parser, str::LineCol};
 
 #[derive(Debug)]
 pub enum StringPart<'bump, 'input> {
@@ -27,6 +27,17 @@ impl<'bump, 'input> StringPart<'bump, 'input> {
 #[derive(Debug)]
 pub enum Expr<'bump, 'input> {
     Number(f64),
+    Bool(bool),
+    Not(Box<'bump, Expr<'bump, 'input>>),
+    If {
+        cond: Box<'bump, Expr<'bump, 'input>>,
+        then_branch: Vec<Stmt<'bump, 'input>>,
+        else_branch: Option<Vec<Stmt<'bump, 'input>>>,
+    },
+    While {
+        cond: Box<'bump, Expr<'bump, 'input>>,
+        body: Vec<Stmt<'bump, 'input>>,
+    },
     Ident(&'input str),
     Str(Vec<StringPart<'bump, 'input>>),
     EnumVariant(&'input str, &'input str), // Type.Variant
@@ -64,62 +75,80 @@ pub enum Expr<'bump, 'input> {
 impl<'bump, 'input> Expr<'bump, 'input> {
     pub fn clone_in(&self, bump: &'bump Bump) -> Self {
         match self {
-            Expr::Number(n) => Expr::Number(*n),
+            Self::Number(n) => Self::Number(*n),
+            Self::Bool(b) => Self::Bool(*b),
+            Self::Not(expr) => Self::Not(Box::new_in(expr.clone_in(bump), bump)),
+            Self::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => Self::If {
+                cond: Box::new_in(cond.clone_in(bump), bump),
+                then_branch: then_branch.iter().map(|e| e.clone_in(bump)).collect(),
+                else_branch: else_branch
+                    .as_ref()
+                    .map(|inner| inner.iter().map(|s| s.clone_in(bump)).collect()),
+            },
 
-            Expr::Ident(s) => Expr::Ident(s),
+            Self::While { cond, body } => Self::While {
+                cond: Box::new_in(cond.clone_in(bump), bump),
+                body: body.iter().map(|e| e.clone_in(bump)).collect(),
+            },
 
-            Expr::Str(parts) => Expr::Str(parts.iter().map(|p| p.clone_in(bump)).collect()),
+            Self::Ident(s) => Self::Ident(s),
 
-            Expr::EnumVariant(ty, var) => Expr::EnumVariant(ty, var),
+            Self::Str(parts) => Self::Str(parts.iter().map(|p| p.clone_in(bump)).collect()),
 
-            Expr::DotVariant(var) => Expr::DotVariant(var),
+            Self::EnumVariant(ty, var) => Self::EnumVariant(ty, var),
 
-            Expr::Neg(expr) => Expr::Neg(Box::new_in(expr.clone_in(bump), bump)),
+            Self::DotVariant(var) => Self::DotVariant(var),
 
-            Expr::Binary(lhs, op, rhs) => Expr::Binary(
+            Self::Neg(expr) => Self::Neg(Box::new_in(expr.clone_in(bump), bump)),
+
+            Self::Binary(lhs, op, rhs) => Self::Binary(
                 Box::new_in(lhs.clone_in(bump), bump),
                 *op,
                 Box::new_in(rhs.clone_in(bump), bump),
             ),
 
-            Expr::Call(func, args) => Expr::Call(
+            Self::Call(func, args) => Self::Call(
                 Box::new_in(func.clone_in(bump), bump),
                 args.iter().map(|e| e.clone_in(bump)).collect(),
             ),
 
-            Expr::MethodCall(receiver, method, args) => Expr::MethodCall(
+            Self::MethodCall(receiver, method, args) => Self::MethodCall(
                 Box::new_in(receiver.clone_in(bump), bump),
                 method,
                 args.iter().map(|e| e.clone_in(bump)).collect(),
             ),
 
-            Expr::Field(expr, field) => Expr::Field(Box::new_in(expr.clone_in(bump), bump), field),
+            Self::Field(expr, field) => Self::Field(Box::new_in(expr.clone_in(bump), bump), field),
 
-            Expr::Index(lhs, rhs) => Expr::Index(
+            Self::Index(lhs, rhs) => Self::Index(
                 Box::new_in(lhs.clone_in(bump), bump),
                 Box::new_in(rhs.clone_in(bump), bump),
             ),
 
-            Expr::StructLit(name, fields) => {
-                Expr::StructLit(name, fields.iter().map(|f| f.clone_in(bump)).collect())
+            Self::StructLit(name, fields) => {
+                Self::StructLit(name, fields.iter().map(|f| f.clone_in(bump)).collect())
             }
 
-            Expr::Switch(expr, arms) => Expr::Switch(
+            Self::Switch(expr, arms) => Self::Switch(
                 Box::new_in(expr.clone_in(bump), bump),
                 arms.iter().map(|a| a.clone_in(bump)).collect(),
             ),
 
-            Expr::For {
+            Self::For {
                 binders,
                 iter,
                 body,
-            } => Expr::For {
+            } => Self::For {
                 binders: binders.clone(),
                 iter: Box::new_in(iter.clone_in(bump), bump),
                 body: body.iter().map(|s| s.clone_in(bump)).collect(),
             },
 
-            Expr::Block(stmts) => Expr::Block(stmts.iter().map(|s| s.clone_in(bump)).collect()),
+            Self::Block(stmts) => Self::Block(stmts.iter().map(|s| s.clone_in(bump)).collect()),
         }
     }
 }
@@ -164,6 +193,14 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
 }
 
 #[derive(Debug)]
@@ -172,15 +209,19 @@ pub enum Stmt<'bump, 'input> {
     Expr(Expr<'bump, 'input>),
     Tail(Expr<'bump, 'input>),
     Return(Option<Expr<'bump, 'input>>),
+    Break,
+    Continue,
 }
 
 impl<'bump, 'input> Stmt<'bump, 'input> {
     pub fn clone_in(&self, bump: &'bump Bump) -> Self {
         match self {
-            Stmt::Let(name, expr) => Stmt::Let(name, expr.clone_in(bump)),
-            Stmt::Expr(expr) => Stmt::Expr(expr.clone_in(bump)),
-            Stmt::Tail(expr) => Stmt::Tail(expr.clone_in(bump)),
-            Stmt::Return(expr) => Stmt::Return(expr.as_ref().map(|e| e.clone_in(bump))),
+            Self::Let(name, expr) => Self::Let(name, expr.clone_in(bump)),
+            Self::Expr(expr) => Self::Expr(expr.clone_in(bump)),
+            Self::Tail(expr) => Self::Tail(expr.clone_in(bump)),
+            Self::Return(expr) => Self::Return(expr.as_ref().map(|e| e.clone_in(bump))),
+            Self::Break => Self::Break,
+            Self::Continue => Self::Continue,
         }
     }
 }
@@ -206,6 +247,7 @@ pub struct TopLevelItem<'bump, 'input> {
 #[derive(Debug)]
 pub enum Item<'bump, 'input> {
     Let(Box<'bump, LetItem<'bump, 'input>>),
+    Const(Box<'bump, ConstItem<'bump, 'input>>),
     Enum(Box<'bump, EnumItem<'input>>),
     Struct(Box<'bump, StructItem<'input>>),
     Fn(Box<'bump, FnItem<'bump, 'input>>),
@@ -233,6 +275,14 @@ pub enum ImportItem<'input> {
 pub struct LetItem<'bump, 'input> {
     pub ident: &'input str,
     pub expr: Expr<'bump, 'input>,
+    pub ty: Option<Type<'input>>,
+}
+
+#[derive(Debug)]
+pub struct ConstItem<'bump, 'input> {
+    pub ident: &'input str,
+    pub expr: Expr<'bump, 'input>,
+    pub ty: Option<Type<'input>>,
 }
 
 #[derive(Debug)]
@@ -341,7 +391,11 @@ parser! {
         rule __() = quiet!{ [' ' | '\t' | '\n' | '\r']+ }
 
         rule keyword() -> ()
-            = ("let" / "fn" / "enum" / "struct" / "switch" / "for" / "interface" / "return" / "extern" / "pub")
+            = (
+                "let" / "fn" / "enum" / "struct" / "switch" / "for" / "interface"
+                / "return" / "extern" / "pub" / "if" / "else" / "while" / "true"
+                / "false" / "break" / "continue"
+            )
                 ![ 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' ]
 
         rule ident() -> &'input str
@@ -417,11 +471,16 @@ parser! {
         rule number() -> f64
             = n:$(['0'..='9']+ ("." ['0'..='9']+)?) { n.parse().unwrap() }
 
+        rule bool_lit() -> Expr<'bump, 'input>
+            = "true" ![ 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' ] { Expr::Bool(true) }
+            / "false" ![ 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' ] { Expr::Bool(false) }
+
         pub rule program() -> Vec<TopLevelItem<'bump, 'input>>
             = _ items:(toplevel_item() ** _) _ { items }
 
         rule nonimport_item() -> Item<'bump, 'input>
             = let_item()
+            / const_item()
             / extern_item()
             / enum_item()
             / struct_item()
@@ -450,7 +509,18 @@ parser! {
             / name:ident() { vec![name] }
 
         rule let_item() -> Item<'bump, 'input>
-            = "let" __ name:ident() _ "=" _ e:expr() _ ";" { Item::Let(Box::new_in(LetItem { ident: name, expr: e }, bump)) }
+            = "let" __ name:ident()
+              _ ty:(":" _ ty:typ() { ty })?
+              _ "=" _ e:expr() _ ";" {
+                  Item::Let(Box::new_in(LetItem { ident: name, expr: e, ty }, bump))
+              }
+
+        rule const_item() -> Item<'bump, 'input>
+            = "const" __ name:ident()
+            _ ty:(":" _ ty:typ() { ty })?
+            _ "=" _ e:expr() _ ";" {
+                Item::Const(Box::new_in(ConstItem { ident: name, expr: e, ty }, bump))
+            }
 
         rule extern_item() -> Item<'bump, 'input>
             = "extern" __ lang:string_lit() _ "{" extern_body() "}"
@@ -538,8 +608,13 @@ parser! {
             = "[" _ name:ident() _ "]" _ { name }
 
         rule receiver() -> Type<'input>
-            = "(" _ p:typ() _ ")" "." { p }
-            / _ p:typ() "." { p }
+            = "(" _ p:receiver_type() _ ")" "." { p }
+            / _ p:receiver_type() "." { p }
+
+        rule receiver_type() -> Type<'input>
+            = pointer:pointer_kind()? name:ident() _ params:type_params()? {
+                Type { ident: Path(vec![name]), params: params.unwrap_or_default(), pointer, modifier: TypeModifier::None }
+            }
 
         rule interface_item() -> Item<'bump, 'input>
             = "interface" __ traits:satisfies_traits()? name:ident() _ "{" _
@@ -563,7 +638,22 @@ parser! {
             }
 
         rule block_expr() -> Expr<'bump, 'input>
-            = switch_expr()
+            = switch_expr() / if_expr() / while_expr()
+
+        rule if_expr() -> Expr<'bump, 'input>
+            = "if" _ cond:expr() _ then_branch:block()
+            else_branch:(_ "else" _ e:else_tail() { e })? {
+                Expr::If { cond: Box::new_in(cond, bump), then_branch, else_branch }
+            }
+
+        rule else_tail() -> Vec<Stmt<'bump, 'input>>
+            = b:block() { b }
+            / e:if_expr() { vec![Stmt::Tail(e)] }
+
+        rule while_expr() -> Expr<'bump, 'input>
+            = "while" _ cond:expr() _ body:block() {
+                Expr::While { cond: Box::new_in(cond, bump), body }
+            }
 
         rule return_stmt() -> Stmt<'bump, 'input>
             = "return" _ e:expr()? _ ";" { Stmt::Return(e) }
@@ -571,10 +661,23 @@ parser! {
         rule stmt() -> Stmt<'bump, 'input>
             = "let" __ name:ident() _ "=" _ e:expr() _ ";" { Stmt::Let(name, e) }
             / return_stmt()
+            / "break" _ ";" { Stmt::Break }
+            / "continue" _ ";" { Stmt::Continue }
             / e:block_expr() _ ";"? { Stmt::Expr(e) }
             / e:expr() _ ";" { Stmt::Expr(e) }
 
         pub rule expr() -> Expr<'bump, 'input> = precedence!{
+            x:(@) _ "||" _ y:@ { Expr::Binary(Box::new_in(x, bump), BinOp::Or, Box::new_in(y, bump)) }
+                --
+            x:(@) _ "&&" _ y:@ { Expr::Binary(Box::new_in(x, bump), BinOp::And, Box::new_in(y, bump)) }
+                --
+            x:(@) _ "==" _ y:@ { Expr::Binary(Box::new_in(x, bump), BinOp::Eq, Box::new_in(y, bump)) }
+            x:(@) _ "!=" _ y:@ { Expr::Binary(Box::new_in(x, bump), BinOp::Ne, Box::new_in(y, bump)) }
+            x:(@) _ "<=" _ y:@ { Expr::Binary(Box::new_in(x, bump), BinOp::Le, Box::new_in(y, bump)) }
+            x:(@) _ ">=" _ y:@ { Expr::Binary(Box::new_in(x, bump), BinOp::Ge, Box::new_in(y, bump)) }
+            x:(@) _ "<" _ y:@  { Expr::Binary(Box::new_in(x, bump), BinOp::Lt, Box::new_in(y, bump)) }
+            x:(@) _ ">" _ y:@  { Expr::Binary(Box::new_in(x, bump), BinOp::Gt, Box::new_in(y, bump)) }
+                --
             x:(@) _ "+" _ y:@ { Expr::Binary(Box::new_in(x, bump), BinOp::Add, Box::new_in(y, bump)) }
             x:(@) _ "-" _ y:@ { Expr::Binary(Box::new_in(x, bump), BinOp::Sub, Box::new_in(y, bump)) }
                 --
@@ -582,6 +685,7 @@ parser! {
             x:(@) _ "/" _ y:@ { Expr::Binary(Box::new_in(x, bump), BinOp::Div, Box::new_in(y, bump)) }
                 --
             "-" e:@ { Expr::Neg(Box::new_in(e, bump)) }
+            "!" e:@ { Expr::Not(Box::new_in(e, bump)) }
                 --
             e:postfix() { e }
         }
@@ -636,6 +740,10 @@ parser! {
 
         rule primary() -> Expr<'bump, 'input>
             = switch_expr()
+            / if_expr()
+            / while_expr()
+            / for_expr()
+            / bool_lit()
             / for_expr()
             / struct_lit()
             / type_variant()
@@ -730,16 +838,12 @@ parser! {
     }
 }
 
+#[inline]
 pub fn parse<'bump, 'input>(
     text: &'input str,
     bump: &'bump Bump,
-) -> Vec<TopLevelItem<'bump, 'input>> {
-    match kon_parser::program(text, bump) {
-        Ok(t) => t,
-        Err(err) => {
-            panic!("{err}");
-        }
-    }
+) -> Result<Vec<TopLevelItem<'bump, 'input>>, ParseError<LineCol>> {
+    kon_parser::program(text, bump)
 }
 
 #[cfg(test)]
