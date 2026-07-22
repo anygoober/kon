@@ -193,37 +193,58 @@ pub struct Param<'input> {
 
 #[derive(Debug)]
 pub enum Item<'bump, 'input> {
-    Let(&'input str, Expr<'bump, 'input>),
-    Enum {
-        name: &'input str,
-        variants: Vec<&'input str>,
-    },
-    Struct {
-        name: &'input str,
-        fields: Vec<Param<'input>>,
-    },
-    Fn {
-        receiver: Option<&'input str>,
-        allocator_receiver: Option<&'input str>,
-        name: &'input str,
-        params: Vec<Param<'input>>,
-        body: Vec<Stmt<'bump, 'input>>,
-        return_type: Type<'input>,
-    },
-    Interface {
-        name: &'input str,
-        methods: Vec<InterfaceMethod<'bump>>,
-    },
-    Extern {
-        lang: &'input str,
-        items: Vec<Stmt<'bump, 'input>>,
-    },
+    Let(Box<'bump, LetItem<'bump, 'input>>),
+    Enum(Box<'bump, EnumItem<'input>>),
+    Struct(Box<'bump, StructItem<'input>>),
+    Fn(Box<'bump, FnItem<'bump, 'input>>),
+    Interface(Box<'bump, InterfaceItem<'bump, 'input>>),
+    Extern(Box<'bump, ExternItem<'bump, 'input>>),
+}
+
+#[derive(Debug)]
+pub struct LetItem<'bump, 'input> {
+    pub ident: &'input str,
+    pub expr: Expr<'bump, 'input>,
+}
+
+#[derive(Debug)]
+pub struct EnumItem<'input> {
+    pub name: &'input str,
+    pub variants: Vec<&'input str>,
+}
+
+#[derive(Debug)]
+pub struct StructItem<'input> {
+    pub name: &'input str,
+    pub fields: Vec<Param<'input>>,
+}
+
+#[derive(Debug)]
+pub struct FnItem<'bump, 'input> {
+    pub receiver: Option<&'input str>,
+    pub allocator_receiver: Option<&'input str>,
+    pub name: &'input str,
+    pub params: Vec<Param<'input>>,
+    pub body: Vec<Stmt<'bump, 'input>>,
+    pub return_type: Type<'input>,
+}
+
+#[derive(Debug)]
+pub struct InterfaceItem<'bump, 'input> {
+    pub name: &'input str,
+    pub methods: Vec<InterfaceMethod<'bump>>,
 }
 
 #[derive(Debug)]
 pub struct InterfaceMethod<'input> {
     pub name: &'input str,
     pub params: Vec<Param<'input>>,
+}
+
+#[derive(Debug)]
+pub struct ExternItem<'bump, 'input> {
+    pub lang: &'input str,
+    pub items: Vec<Stmt<'bump, 'input>>,
 }
 
 #[derive(Debug)]
@@ -286,17 +307,17 @@ parser! {
             / interface_item()
 
         rule let_item() -> Item<'bump, 'input>
-            = "let" __ name:ident() _ "=" _ e:expr() _ ";" { Item::Let(name, e) }
+            = "let" __ name:ident() _ "=" _ e:expr() _ ";" { Item::Let(Box::new_in(LetItem { ident: name, expr: e }, bump)) }
 
         rule extern_item() -> Item<'bump, 'input>
-            = "extern" __ lang:string_lit() _ "{" _ "}" { Item::Extern { lang, items: vec![] } }
+            = "extern" __ lang:string_lit() _ "{" _ "}" { Item::Extern(Box::new_in(ExternItem { lang, items: vec![] }, bump)) }
 
         // rule extern_body()
 
         rule enum_item() -> Item<'bump, 'input>
             = "enum" __ name:ident() _ "{" _
               variants:(enum_variant() ** (_ "," _)) _ ","? _
-              "}" { Item::Enum { name, variants } }
+              "}" { Item::Enum(Box::new_in(EnumItem { name, variants }, bump)) }
 
         rule enum_variant() -> &'input str
             = "." v:ident() { v }
@@ -304,7 +325,7 @@ parser! {
         rule struct_item() -> Item<'bump, 'input>
             = "struct" __ name:ident() _ "{" _
               fields:(param() ** (_ "," _)) _ ","? _
-              "}" { Item::Struct { name, fields } }
+              "}" { Item::Struct(Box::new_in(StructItem { name, fields }, bump)) }
 
         rule param() -> Param<'input>
             = name:ident() _ ":" _ ty:ident() { Param { name, ty } }
@@ -314,14 +335,14 @@ parser! {
               "(" _ params:(param() ** (_ "," _)) _ ")" _
               rt:fn_rt()
               body:block() {
-                Item::Fn {
+                Item::Fn(Box::new_in(FnItem {
                     receiver: recv,
                     allocator_receiver: alloc_recv,
                     name,
                     params,
                     body,
                     return_type: rt
-                }
+                }, bump))
               }
 
         rule fn_rt() -> Type<'input>
@@ -337,7 +358,7 @@ parser! {
         rule interface_item() -> Item<'bump, 'input>
             = "interface" __ name:ident() _ "{" _
               methods:(interface_method() ** _) _
-              "}" { Item::Interface { name, methods } }
+              "}" { Item::Interface(Box::new_in(InterfaceItem { name, methods }, bump)) }
 
         rule interface_method() -> InterfaceMethod<'input>
             = "fn" __ name:ident() _
