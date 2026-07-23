@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     source_path_str,
                     err.location.offset..(err.location.offset + 1),
                 ))
-                .with_message(err.to_string()),
+                .with_message(format!("expected {}", err.expected)),
             )
             .finish()
             .print((source_path_str, Source::from(&source)))?;

@@ -700,7 +700,7 @@ parser! {
 
         rule if_expr() -> Expr<'bump, 'input>
             = quiet! {
-                "if" _ cond:expr() _ then_branch:block()
+                "if" _ cond:cond_expr() _ then_branch:block()
                   else_branch:(_ "else" _ e:else_tail() { e })? {
                       Expr::If { cond: Box::new_in(cond, bump), then_branch, else_branch }
                   }
@@ -713,7 +713,7 @@ parser! {
 
         rule while_expr() -> Expr<'bump, 'input>
             = quiet! {
-                "while" _ cond:expr() _ body:block() {
+                "while" _ cond:cond_expr() _ body:block() {
                     Expr::While { cond: Box::new_in(cond, bump), body }
                 }
             }
@@ -730,7 +730,11 @@ parser! {
             / e:block_expr() _ ";"? { Stmt::Expr(e) }
             / e:expr() _ ";" { Stmt::Expr(e) }
 
-        pub rule expr() -> Expr<'bump, 'input> = precedence!{
+        pub rule expr() -> Expr<'bump, 'input> = expr_impl(false)
+
+        rule cond_expr() -> Expr<'bump, 'input> = expr_impl(true)
+
+        pub rule expr_impl(no_struct: bool) -> Expr<'bump, 'input> = precedence!{
             x:(@) _ "||" _ y:@ { Expr::Binary(Box::new_in(x, bump), BinOp::Or, Box::new_in(y, bump)) }
                 --
             x:(@) _ "&&" _ y:@ { Expr::Binary(Box::new_in(x, bump), BinOp::And, Box::new_in(y, bump)) }
@@ -751,11 +755,11 @@ parser! {
             quiet! { "-" } e:@ { Expr::Neg(Box::new_in(e, bump)) }
             quiet! { "!" } e:@ { Expr::Not(Box::new_in(e, bump)) }
                 --
-            e:postfix() { e }
+            e:postfix(no_struct) { e }
         }
 
-        rule postfix() -> Expr<'bump, 'input>
-            = base:primary() ops:postfix_op()* {
+        rule postfix(no_struct: bool) -> Expr<'bump, 'input>
+            = base:primary(no_struct) ops:postfix_op()* {
                 ops.into_iter().fold(base, |acc, op| match op {
                                 LaterPostfixOp::MethodCall(name, args) => {
                                     Expr::MethodCall(
@@ -802,14 +806,13 @@ parser! {
                 LaterPostfixOp::Index(idx)
             }
 
-        rule primary() -> Expr<'bump, 'input>
+        rule primary(no_struct: bool) -> Expr<'bump, 'input>
             = switch_expr()
             / if_expr()
             / while_expr()
             / for_expr()
             / bool_lit()
-            / for_expr()
-            / struct_lit()
+            / s:struct_lit() {? if no_struct { Err("unexpected struct literal") } else { Ok(s) } }
             / type_variant()
             / dot_variant()
             / string_expr()
@@ -856,7 +859,7 @@ parser! {
 
         rule for_expr() -> Expr<'bump, 'input>
             = quiet! {
-                "for" __ binders:(ident() ** (_ "," _)) __ "in" __ iter:expr() _ body:block() {
+                "for" __ binders:(ident() ** (_ "," _)) __ "in" __ iter:cond_expr() _ body:block() {
                     Expr::For { binders, iter: Box::new_in(iter, bump), body }
                 }
             }
